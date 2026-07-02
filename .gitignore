@@ -26,6 +26,7 @@ report/*
 !report/technical_report.md
 !report/technical_report.pdf
 !report/technical_report_results_dashboard.png
+!report/ebay_anchoring_rl_presentation.pptx
 *.csv
 *.parquet
 *.pt

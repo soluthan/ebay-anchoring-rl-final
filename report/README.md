@@ -6,6 +6,7 @@ Recommended tracked files:
 
 - `technical_report.md`
 - `technical_report.pdf`
+- `ebay_anchoring_rl_presentation.pptx`
 - Final figures used directly in the report
 
 Do not place raw data, parquet files, trained models, private credentials, audit memos, model-comparison transcripts, or working literature-review PDFs here. Those can remain local, but they should not be part of the public submission repository.

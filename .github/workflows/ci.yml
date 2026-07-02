@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile flat modules
+        run: |
+          python -m py_compile \
+            project_constants.py \
+            data_preprocess.py \
+            phase1_supervised.py \
+            phase2_cql.py \
+            phase3_ppo.py \
+            recommend.py \
+            recommend_one.py \
+            results.py \
+            run_pipeline.py
+
+      - name: Run static smoke tests
+        run: python -m unittest discover -s tests

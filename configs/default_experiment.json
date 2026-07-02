@@ -1,0 +1,112 @@
+{
+  "experiment_name": "ebay_best_offer_anchoring_rl",
+  "description": "Default reproducibility configuration for the flat-module eBay Best-Offer anchoring RL pipeline.",
+  "data_policy": {
+    "raw_data_committed": false,
+    "processed_data_committed": false,
+    "expected_source_file": "clean_master_dataset.parquet",
+    "processed_split_dir": "data"
+  },
+  "random_seeds": {
+    "data_preprocess": 42,
+    "phase1_supervised": 42,
+    "phase2_cql": 42,
+    "phase3_ppo": 42,
+    "ope": 42,
+    "recommendation_sampling": 42
+  },
+  "paths": {
+    "DATA_DIR_FOR_PREP": ".",
+    "OUT_DIR": "./data",
+    "DATA_DIR_FOR_PHASES": "./data",
+    "MODEL_DIR": "./models",
+    "OUTPUT_DIR": "./outputs"
+  },
+  "phase1_supervised": {
+    "script": "phase1_supervised.py",
+    "XGB_N_ESTIMATORS": 400,
+    "outputs": [
+      "models/deal_classifier.ubj",
+      "models/clf_metrics.json",
+      "models/behavioral_benchmark.json",
+      "models/greedy_metrics.json"
+    ]
+  },
+  "data_preprocess": {
+    "script": "data_preprocess.py",
+    "SPLIT_MODE": "random",
+    "supported_split_modes": [
+      "random",
+      "temporal",
+      "leaf_holdout"
+    ],
+    "train_only_fitted_statistics": [
+      "seller_score_p99",
+      "seller_pos_median",
+      "top_leaf_categories"
+    ],
+    "outputs": [
+      "data/train.parquet",
+      "data/val.parquet",
+      "data/test.parquet",
+      "data/split_summary.csv",
+      "data/preprocess_stats.json"
+    ]
+  },
+  "phase2_cql": {
+    "script": "phase2_cql.py",
+    "CQL_EPOCHS": 30,
+    "CQL_MAX_ROWS": 400000,
+    "outputs": [
+      "models/cql_best.pt",
+      "models/cql_scaler.pkl",
+      "models/cql_history.json",
+      "models/cql_metrics.json"
+    ]
+  },
+  "ope": {
+    "script": "ope.py",
+    "OPE_BANDWIDTHS": "0.03,0.05,0.10",
+    "OPE_BOOTSTRAP": 200,
+    "OPE_MAX_ROWS": 200000,
+    "OPE_BEHAVIOR_MAX_ROWS": 300000,
+    "OPE_WEIGHT_CLIP": 20,
+    "OPE_INCLUDE_CQL": 1,
+    "outputs": [
+      "models/ope_behavior_model.pkl",
+      "outputs/ope_policy_eval.csv",
+      "outputs/ope_weight_diagnostics.csv",
+      "outputs/ope_summary.json"
+    ]
+  },
+  "phase3_ppo": {
+    "script": "phase3_ppo.py",
+    "PPO_STEPS": 200000,
+    "PPO_ROLLOUT": 2048,
+    "PPO_EVAL_EPISODES": 5000,
+    "PPO_FAITHFUL": 1,
+    "PPO_FAITHFUL_BETA": 8.0,
+    "outputs": [
+      "models/ppo_best_faithful.pt",
+      "models/ppo_history_faithful.json",
+      "models/ppo_metrics_faithful.json"
+    ]
+  },
+  "recommendations": {
+    "RECO_N": 5000,
+    "outputs": [
+      "outputs/offer_recommendations.csv",
+      "outputs/policy_comparison.csv",
+      "outputs/results_dashboard.png"
+    ]
+  },
+  "run_order": [
+    "DATA_DIR=. OUT_DIR=./data python data_preprocess.py",
+    "DATA_DIR=./data MODEL_DIR=./models python phase1_supervised.py",
+    "DATA_DIR=./data MODEL_DIR=./models python phase2_cql.py",
+    "DATA_DIR=./data MODEL_DIR=./models PPO_FAITHFUL=1 python phase3_ppo.py",
+    "MODEL_DIR=./models OUTPUT_DIR=./outputs python results.py",
+    "DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python ope.py",
+    "DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python recommend.py"
+  ]
+}

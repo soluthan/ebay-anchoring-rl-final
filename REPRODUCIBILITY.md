@@ -73,7 +73,11 @@ The scripts use seed `42` for data splitting, model sampling, CQL, PPO, and reco
 
 ## Dependency Policy
 
-The project keeps the provided `requirements.txt` as the dependency source of truth. For a formal archival submission, export exact local package versions from the environment used to produce the final results and include that as an appendix or separate lock file if the course permits it.
+The project keeps `requirements.txt` as the readable dependency source of truth
+and includes `requirements-lock.txt` as the exact package snapshot from the
+clean smoke-test environment used for the final submission audit. Use the lock
+file for archival reproduction, and use the range-based file when adapting the
+project to a newer local environment.
 
 ## Smoke Checks
 

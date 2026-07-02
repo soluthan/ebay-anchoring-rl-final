@@ -64,6 +64,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+For exact reproduction of the final clean smoke-test environment, use:
+
+```bash
+pip install -r requirements-lock.txt
+```
+
 No dataset is included in the repository. Place the merged source file at `clean_master_dataset.parquet` or point `DATA_DIR` to the directory that contains it.
 
 ## Running the Pipeline

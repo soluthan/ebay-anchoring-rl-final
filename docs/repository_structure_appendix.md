@@ -144,7 +144,30 @@ because its effective sample size collapses. CQL is valuable as a conservative
 policy because it remains evaluable from the logged data, even though its
 estimated reward is lower than historical behavior in the reported table.
 
-## 8. Generated Artifacts and Git Boundary
+## 8. Local Production Deliverables
+
+The production run creates real local data/model/output deliverables. They are
+not committed because they contain private data, trained model state, or
+generated analysis artifacts, but they are the files a reviewer would recreate
+when rerunning the pipeline.
+
+| Stage | Local deliverables | Purpose |
+| --- | --- | --- |
+| Raw merged input | `clean_master_dataset.parquet` | Private source table derived from Best Offer threads and listings. |
+| Preprocessed MDP splits | `data/train.parquet`, `data/val.parquet`, `data/test.parquet` | Train/validation/test rows for the one-step decision problem. |
+| Split audit files | `data/split_summary.csv`, `data/preprocess_stats.json` | Split counts, support checks, and train-fitted preprocessing statistics. |
+| Phase 1 model | `models/deal_classifier.ubj`, `models/clf_metrics.json` | Supervised acceptance model and predictive diagnostics. |
+| Phase 2 CQL | `models/cql_best.pt`, `models/cql_scaler.pkl`, `models/cql_metrics.json` | Conservative offline RL policy and scaler. |
+| OPE diagnostics | `models/ope_behavior_model.pkl`, `outputs/ope_policy_eval.csv`, `outputs/ope_weight_diagnostics.csv`, `outputs/ope_summary.json` | Estimated behavior policy, policy-value diagnostics, effective sample size, and weight checks. |
+| Phase 3 PPO | `models/ppo_best_faithful.pt`, `models/ppo_history_faithful.json`, `models/ppo_metrics_faithful.json` | Faithful simulator PPO checkpoint and simulator-only metrics. |
+| Recommendations and summaries | `outputs/offer_recommendations.csv`, `outputs/policy_comparison.csv`, `outputs/results_dashboard.png` | Recommendation table, policy comparison table, and result visualization inputs. |
+| Final report assets | `report/technical_report.md`, `report/technical_report.pdf`, `report/technical_report_results_dashboard.png`, `report/ebay_anchoring_rl_presentation.pptx` | Human-facing deliverables that are intentionally tracked. |
+
+The distinction is intentional: local production deliverables make the analysis
+reproducible, while the public repository remains clean and does not expose
+private data or trained artifacts.
+
+## 9. Generated Artifacts and Git Boundary
 
 The repository tracks code, documentation, and final human-facing deliverables.
 It does not track private data or local model artifacts.
@@ -158,7 +181,7 @@ It does not track private data or local model artifacts.
 | `report/technical_report.*` | Final report deliverables; tracked. |
 | `report/ebay_anchoring_rl_presentation.pptx` | Final presentation deliverable; tracked. |
 
-## 9. Reading Order for Reviewers
+## 10. Reading Order for Reviewers
 
 Recommended path through the repository:
 

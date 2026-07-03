@@ -28,7 +28,10 @@ Expected local inputs and generated outputs:
 - Smoke-test output directories such as `outputs_smoke/`
 - Human-facing report and selected figures: `report/`
 
-See `docs/data_schema.md` for the raw-to-engineered column mapping and the one-step MDP framing.
+See `docs/data_schema.md` for the raw-to-engineered column mapping and the
+one-step MDP framing. See `docs/repository_structure_appendix.md` for the
+folder structure, module responsibilities, core constants, and evidence-type
+boundary used across the repository.
 
 ## Configuration
 

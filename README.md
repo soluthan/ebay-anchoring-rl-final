@@ -24,6 +24,7 @@ The code intentionally uses a flat module layout so `run_pipeline.py` can import
 | `run_pipeline.py` | Runs preprocessing, Phase 1, Phase 2, Phase 3, and results in sequence. |
 | `configs/default_experiment.json` | Documents default paths, seeds, hyperparameters, outputs, and run order; scripts still read environment variables. |
 | `docs/data_schema.md` | Documents the raw inputs, engineered MDP columns, and generated artifacts. |
+| `docs/repository_structure_appendix.md` | Explains the folder structure, module responsibilities, core constants, evidence types, and Git artifact boundary. |
 | `REPRODUCIBILITY.md` | Documents data boundaries, configuration, seeds, and submission tagging. |
 | `tests/test_static_repo.py` | Lightweight static checks that can run without the private dataset. |
 

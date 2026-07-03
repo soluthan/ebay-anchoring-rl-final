@@ -49,7 +49,7 @@ Off-policy evaluation (OPE) is necessary because the project compares target pol
 
 ### Recommender and Decision-Support Framing
 
-The final system is best interpreted as a recommender or decision-support tool. It does not autonomously bargain, and it does not claim production lift. Instead, it generates offer anchors and support diagnostics for a buyer-facing decision. This framing is closer to logged-feedback recommendation and decision support than to autonomous marketplace control. Xiao and Wang (2023), for example, frame offline RL for recommendation around logged feedback, distribution mismatch, and support constraints. This also makes the ethical and methodological boundary clearer: recommendations should be accompanied by evidence type, uncertainty, and support warnings.
+The final system is best interpreted as a recommender or decision-support tool. It does not autonomously bargain, and it does not claim production lift. Instead, it generates offer anchors and support diagnostics for a buyer-facing decision. This framing is closer to logged-feedback recommendation and decision support than to autonomous marketplace control. Xiao and Wang (2021), for example, frame offline RL for recommendation around logged feedback, distribution mismatch, and support constraints. This also makes the ethical and methodological boundary clearer: recommendations should be accompanied by evidence type, uncertainty, and support warnings.
 
 ## 3. Problem Formulation
 
@@ -205,7 +205,7 @@ Tversky, A., and Kahneman, D. (1974). Judgment under uncertainty: Heuristics and
 
 Uehara, M., Shi, C., and Kallus, N. (2022). A review of off-policy evaluation in reinforcement learning. arXiv:2212.06355.
 
-Xiao, T., and Wang, D. (2023). A general offline reinforcement learning framework for interactive recommendation. arXiv:2310.00678.
+Xiao, T., and Wang, D. (2021). A general offline reinforcement learning framework for interactive recommendation. Proceedings of the AAAI Conference on Artificial Intelligence. arXiv:2310.00678.
 
 Yu, T., Thomas, G., Yu, L., Ermon, S., Zou, J., Levine, S., Finn, C., and Ma, T. (2020). MOPO: Model-based offline policy optimization. Advances in Neural Information Processing Systems.
 

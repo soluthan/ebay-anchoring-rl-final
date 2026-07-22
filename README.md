@@ -18,13 +18,17 @@ value of later counteroffers.
 
 ## Correct observation unit
 
-`data_preprocess.py` follows the official companion-code semantics:
+`data_preprocess.py` implements the dataset-specific opening-offer definition:
 
 - bargaining thread: `(anon_item_id, anon_byr_id)`;
 - opening event: chronological event `order == 1` with `offr_type_id == 0`;
 - immediate acceptance: opening-row `status_id` in `{1, 9}`;
 - action support: `0.01 < offr_price / start_price_usd <= 1.00`;
 - reward: `opening_accepted * (1 - anchor_ratio)`.
+
+The `{1, 9}` acceptance mapping is not silently trusted: preprocessing writes
+`status_price_diagnostics.csv`, status frequencies, and acceptance-by-anchor
+curves so the mapping can be adjudicated against the local data.
 
 A countered opening receives zero immediate reward even if the buyer later buys
 the item. `thread_eventual_accepted` is retained only for auditing. Random and

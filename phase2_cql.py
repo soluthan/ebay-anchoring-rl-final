@@ -1,7 +1,9 @@
 """
 phase2_cql.py — Offline RL: Conservative Q-Learning (CQL)
 =========================================================
-Single-step continuous-action CQL, from scratch in PyTorch.
+Single-step continuous-action CQL, from scratch in PyTorch.  This is a
+contextual-bandit problem: every observation is terminal, gamma is zero, and
+the regression target is the observed immediate reward with no bootstrapping.
 
 Q(s, a) is trained to regress the observed reward (1-step Bellman target, since
 every episode is terminal) while a CQL penalty pushes DOWN the Q-values of
@@ -34,12 +36,13 @@ from project_constants import (
     ACTION_COL,
     ANCHOR_MAX,
     ANCHOR_MIN,
-    DEAL_COL,
+    CLASSIFIER_FILE,
     N_ACTIONS_DISC,
     REWARD_COL,
     SEED,
     STATE_COLS,
 )
+from policy_utils import support_flags
 
 # ── reproducibility ───────────────────────────────────────────────
 np.random.seed(SEED)
@@ -53,6 +56,9 @@ MODEL_DIR.mkdir(parents=True, exist_ok=True)
 # ── MDP columns (match Phase 1 output) ────────────────────────────
 EPOCHS = int(os.environ.get("CQL_EPOCHS", "30"))
 MAX_ROWS = int(os.environ.get("CQL_MAX_ROWS", "400000"))
+CQL_ALPHA = float(os.environ.get("CQL_ALPHA", "5.0"))
+CQL_N_NEG = int(os.environ.get("CQL_N_NEG", "10"))
+CQL_GAMMA = 0.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {DEVICE}")
 
@@ -114,6 +120,7 @@ class CQLAgent:
             ep_td, ep_cql = [], []
             for s_b, a_b, r_b in loader:
                 q_sa = self.q(s_b, a_b)
+                # One-step terminal target: r + gamma * V(next) with gamma=0.
                 td = nn.functional.mse_loss(q_sa, r_b)
 
                 B = s_b.shape[0]
@@ -171,43 +178,32 @@ class CQLAgent:
             pickle.dump(self.scaler, f)
 
 
-# ── Legacy proxy diagnostic ───────────────────────────────────────
-def heuristic_ope_ips(a_hist, a_pred, r):
-    """Very rough continuous-action IPS proxy.
-
-    The report-grade OPE lives in ope.py, where propensities are estimated from
-    state, kernel bandwidth sensitivity is reported, and ESS/CIs are written.
-    This shortcut remains only as a lightweight Phase-2 smoke diagnostic.
-    """
-    from scipy.stats import norm
-    mu, sig = a_hist.mean(), a_hist.std() + 1e-8
-    p_b = norm.pdf(a_hist, mu, sig) + 1e-8
-    p_p = norm.pdf(a_hist, a_pred, 0.05) + 1e-8
-    w = np.clip(p_p / p_b, 0, 10)
-    return float((w * r).mean())
-
-
 # ── evaluation ────────────────────────────────────────────────────
-def evaluate(agent, test, clf) -> dict:
+def evaluate(agent, test, clf, support_p5: float, support_p95: float) -> dict:
     S = test[STATE_COLS].values.astype(np.float32)
-    A = test[ACTION_COL].values.astype(np.float32)
-    R = test[REWARD_COL].values.astype(np.float32)
 
     a_cql = agent.act_batch(S)
     feat = np.column_stack([S, a_cql]).astype(np.float32)   # RAW features for XGBoost
-    p = clf.predict_proba(feat)[:, 1]
+    p_accept = clf.predict_proba(feat)[:, 1]
 
-    savings = np.clip(1.0 - a_cql, 0.0, 0.99)
-    e_savings_sim = float((p * savings).mean())
-    ope = heuristic_ope_ips(A, a_cql, R)
+    savings = 1.0 - a_cql
+    expected_savings = float((p_accept * savings).mean())
 
     metrics = {
-        "cql_e_savings_sim": e_savings_sim,
-        "cql_ope_ips": ope,
-        "cql_ope_ips_note": "Legacy heuristic only; use ope.py for SNIPS/DR/ESS/CIs.",
+        "evidence_type": "Phase-1 model estimate with support-conservative CQL actions",
+        "one_step_terminal": True,
+        "gamma": CQL_GAMMA,
+        "cql_alpha": float(agent.alpha),
+        "cql_n_negative_actions": int(agent.n_neg),
+        "cql_e_savings_sim": expected_savings,
         "cql_mean_anchor": float(a_cql.mean()),
         "cql_std_anchor": float(a_cql.std()),
-        "cql_mean_p_deal": float(p.mean()),
+        "cql_mean_p_accept": float(p_accept.mean()),
+        "cql_within_p5_p95_support_fraction": float(
+            support_flags(a_cql, support_p5, support_p95).mean()
+        ),
+        "support_p5": float(support_p5),
+        "support_p95": float(support_p95),
     }
     print("\n── CQL evaluation ─────────────────────────────────")
     for k, v in metrics.items():
@@ -231,7 +227,7 @@ def main():
     S, A, R = (train[STATE_COLS].values, train[ACTION_COL].values, train[REWARD_COL].values)
     Sv, Av, Rv = (val[STATE_COLS].values, val[ACTION_COL].values, val[REWARD_COL].values)
 
-    agent = CQLAgent(len(STATE_COLS))
+    agent = CQLAgent(len(STATE_COLS), alpha=CQL_ALPHA, n_neg=CQL_N_NEG)
     agent.fit(S, A, R, Sv, Av, Rv)
 
     agent.save_scaler(MODEL_DIR / "cql_scaler.pkl")
@@ -239,9 +235,12 @@ def main():
         json.dump(agent.history, f, indent=2)
 
     import xgboost as xgb
-    clf = xgb.XGBClassifier(); clf.load_model(str(MODEL_DIR / "deal_classifier.ubj"))
+    clf = xgb.XGBClassifier(); clf.load_model(str(MODEL_DIR / CLASSIFIER_FILE))
 
-    metrics = evaluate(agent, test, clf)
+    support_p5, support_p95 = np.percentile(
+        train[ACTION_COL].values.astype(np.float32), [5, 95]
+    )
+    metrics = evaluate(agent, test, clf, float(support_p5), float(support_p95))
     with open(MODEL_DIR / "cql_metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 

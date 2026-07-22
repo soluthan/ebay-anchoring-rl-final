@@ -6,7 +6,7 @@ Runs the phases in sequence using the FLAT module layout in this folder
 agents/, envs/ package; everything lives side-by-side here).
 
 Usage:
-    python run_pipeline.py                           # prep -> 1 -> 2 -> 3 -> results -> OPE
+    python run_pipeline.py             # prep -> 1 -> 2 -> 3 -> OPE -> recommend -> results
     OUT_DIR=./data_time SPLIT_MODE=temporal python run_pipeline.py
     python run_pipeline.py --phase 1                  # just Phase 1
     python run_pipeline.py --phase prep               # just feature engineering
@@ -48,11 +48,17 @@ def run_phase(name: str, fn):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--phase", choices=["prep", "1", "2", "3", "results", "ope", "all"], default="all",
+        "--phase",
+        choices=["prep", "1", "2", "3", "ope", "recommend", "results", "all"],
+        default="all",
         help="Which phase to run (default: all)",
     )
     args = parser.parse_args()
-    phases = ["prep", "1", "2", "3"] if args.phase == "all" else [args.phase]
+    phases = (
+        ["prep", "1", "2", "3", "ope", "recommend", "results"]
+        if args.phase == "all"
+        else [args.phase]
+    )
 
     if "prep" in phases:
         from data_preprocess import main as prep
@@ -72,13 +78,17 @@ def main():
         from phase3_ppo import main as phase3
         run_phase("Phase 3: Online RL — PPO Simulator", phase3)
 
-    if args.phase in {"results", "all"}:
-        from results import main as results
-        run_phase("Results: Comparison Dashboard", results)
-
-    if args.phase in {"ope", "all"}:
+    if "ope" in phases:
         from ope import main as ope
         run_phase("OPE: Propensity-Weighted Diagnostics", ope)
+
+    if "recommend" in phases:
+        from recommend import main as recommend
+        run_phase("Recommendations: Policy Menu and Support", recommend)
+
+    if "results" in phases:
+        from results import main as results
+        run_phase("Results: Comparison Dashboard", results)
 
     print("\n🎉 Pipeline complete.")
 

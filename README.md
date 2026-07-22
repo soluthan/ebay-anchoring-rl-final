@@ -1,63 +1,92 @@
-# Offline and Simulated Online RL for eBay Best Offer Anchoring
+# Support-Aware Opening Offers for eBay Best Offer
 
-Offline and simulated online reinforcement learning project for studying buyer anchoring in eBay Best Offer negotiations.
+This course project studies one narrow decision:
 
-The project models a single-step bargaining MDP where the state describes a listing and seller, the action is the buyer's opening offer ratio, and the reward is realized savings for accepted offers. If an offer is accepted, savings are mechanically `1 - anchor_ratio`; model-estimated expected savings are therefore `P(accept | state, anchor) * (1 - anchor)`. The project compares historical buyer behavior with supervised baselines, Conservative Q-Learning (CQL), and PPO in a simulator learned from the Phase 1 acceptance model.
+> Given listing and seller characteristics, which **first buyer-offer ratio**
+> maximizes model-estimated immediate expected savings while remaining supported
+> by historical behavior?
 
-Important evidence boundary: historical rows are observed logged outcomes, supervised/CQL rows are Phase-1 model estimates, and PPO rows are simulator-only estimates. Simulator-predicted deal rates are not directly comparable to real observed deal rates, and no simulator result should be read as evidence of live marketplace lift.
+For state `s` and opening-offer ratio `a`:
 
-## Repository Layout
+```text
+P(opening offer accepted | s, a) * (1 - a)
+```
 
-The code intentionally uses a flat module layout so `run_pipeline.py` can import the phase modules directly.
+The source is observational. Results are policy diagnostics, not causal effects
+of changing an offer and not estimates of buyer welfare, resale value, or the
+value of later counteroffers.
+
+## Correct observation unit
+
+`data_preprocess.py` follows the official companion-code semantics:
+
+- bargaining thread: `(anon_item_id, anon_byr_id)`;
+- opening event: chronological event `order == 1` with `offr_type_id == 0`;
+- immediate acceptance: opening-row `status_id` in `{1, 9}`;
+- action support: `0.01 < offr_price / start_price_usd <= 1.00`;
+- reward: `opening_accepted * (1 - anchor_ratio)`.
+
+A countered opening receives zero immediate reward even if the buyer later buys
+the item. `thread_eventual_accepted` is retained only for auditing. Random and
+temporal splits assign complete `anon_item_id` groups, preventing listing leakage.
+
+## Models
+
+| Component | Role |
+| --- | --- |
+| Historical behavior | Observed immediate-outcome benchmark |
+| Fixed anchor 0.70 | Rule-based baseline, not a greedy policy |
+| Supervised greedy | Grid maximizer of the Phase-1 expected-savings surface |
+| One-step CQL | Support-conservative offline policy; every row is terminal and `gamma=0` |
+| PPO basic | Simulator-only optimizer using a bounded Beta policy |
+| PPO robust | PPO with probability noise and penalties outside historical p5-p95 support |
+
+The Phase-1 classifier reports AUC, Brier score, log loss, and a calibration
+table. PPO results are never interpreted as live-marketplace lift.
+
+The shared 67-point action grid contains the fixed 0.70 anchor exactly. This
+prevents a tree-model discontinuity at a common offer ratio from making the
+nominal grid-greedy policy score below the fixed baseline solely because its
+grid missed 0.70.
+
+## Features
+
+The state remains deliberately compact:
+
+```python
+[
+    "log_list_price",
+    "seller_score_norm",
+    "seller_pos_pct",
+    "categ_id_clean",
+]
+```
+
+`anchor_ratio` is the action, not a pre-decision state feature. Buyer/item IDs,
+offer type, timestamp, and raw status are used only for extraction, splitting,
+and audits.
+
+By default `FILTER_FASHION=1` restricts the entire study to
+`meta_categ_id == 11450`. Every reported result is therefore conditional on the
+fashion sample. Set `FILTER_FASHION=0` only for a separately documented rerun.
+
+## Repository layout
 
 | File | Purpose |
 | --- | --- |
-| `data_preprocess.py` | Builds train/validation/test parquet splits, with random, temporal, and leaf-holdout robustness modes. |
-| `project_constants.py` | Shared schema, seed, action-bound, and feature constants for the flat module layout. |
-| `phase1_supervised.py` | Trains the XGBoost deal-probability model used by the baselines and simulator. |
-| `phase2_cql.py` | Trains a PyTorch CQL policy on the offline one-step MDP. |
-| `phase3_ppo.py` | Trains PPO inside a Phase-1 model-based simulator, with a faithful-support variant. |
-| `ope.py` | Runs estimated-propensity OPE diagnostics for historical, greedy, CQL, and external target policies. |
-| `recommend.py` | Produces batch offer recommendations and support diagnostics. |
-| `recommend_one.py` | Produces an offer menu for a single listing. |
-| `results.py` | Builds comparison tables and result figures from generated model artifacts. |
-| `run_pipeline.py` | Runs preprocessing, Phase 1, Phase 2, Phase 3, and results in sequence. |
-| `configs/default_experiment.json` | Documents default paths, seeds, hyperparameters, outputs, and run order; scripts still read environment variables. |
-| `docs/data_schema.md` | Documents the raw inputs, engineered MDP columns, and generated artifacts. |
-| `docs/repository_structure_appendix.md` | Explains the folder structure, module responsibilities, core constants, evidence types, and Git artifact boundary. |
-| `REPRODUCIBILITY.md` | Documents data boundaries, configuration, seeds, and submission tagging. |
-| `tests/test_static_repo.py` | Lightweight static checks that can run without the private dataset. |
-
-## Data and Artifact Policy
-
-Raw data, processed parquet files, trained models, generated figures, and local virtual environments are intentionally not committed. The repository expects these to live locally in ignored paths such as `data/`, `models/`, `outputs/`, and `report/`.
-
-Ignored examples include:
-
-- `*.csv`
-- `*.parquet`
-- `*.pt`
-- `*.pkl`
-- `*.ubj`
-- `data/`
-- `data_*/`
-- `models/`
-- `models_*/`
-- `outputs/`
-- `outputs_*/`
-- `.venv/`
-
-The `report/` directory is reserved for final submission-facing deliverables. Working literature reviews, audit notes, model-comparison memos, and other private process documents should stay local and untracked. Datasets and model artifacts remain ignored.
-
-## Reproducibility
-
-The default experiment settings are recorded in `configs/default_experiment.json`, including seeds, expected paths, key hyperparameters, generated outputs, and the command order used to reproduce the pipeline. This file is documentation, not an automatically consumed runtime config; the scripts use environment variables so individual phases can be run independently.
-
-See `REPRODUCIBILITY.md` for the full reproducibility checklist. The repository also includes a GitHub Actions smoke test that compiles the flat Python modules and validates static project structure without requiring the private dataset.
+| `data_preprocess.py` | Opening-offer extraction, reward, grouped splits, semantic audits |
+| `phase1_supervised.py` | Acceptance model, calibration, fixed and true-greedy baselines |
+| `phase2_cql.py` | One-step terminal CQL |
+| `phase3_ppo.py` | Basic and robust simulator-only PPO with a Beta policy |
+| `policy_utils.py` | Shared action grid, scoring, and supervised greedy policy |
+| `ope.py` | Optional estimated-propensity support diagnostics |
+| `recommend.py` | Batch greedy/CQL recommendation table |
+| `recommend_one.py` | One-listing fixed/greedy/CQL menu |
+| `results.py` | Evidence-separated comparison table and dashboard |
+| `run_pipeline.py` | Flat-module orchestration |
+| `MIGRATION.md` | Required cleanup and rerun steps for replacing the old pipeline |
 
 ## Setup
-
-Create and activate a virtual environment, then install the existing dependencies:
 
 ```bash
 python -m venv .venv
@@ -65,91 +94,61 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-For exact reproduction of the final clean smoke-test environment, use:
+Place `clean_master_dataset.parquet` in the project root. It must include at
+least `anon_item_id`, `anon_byr_id`, `offr_type_id`, `src_cre_date`,
+`status_id`, `offr_price`, `start_price_usd`, and `meta_categ_id`.
+
+## Run
+
+Complete corrected pipeline:
 
 ```bash
-pip install -r requirements-lock.txt
+DATA_DIR=. OUT_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs \
+PPO_RUN_BOTH=1 python run_pipeline.py --phase all
 ```
 
-No dataset is included in the repository. Place the merged source file at `clean_master_dataset.parquet` or point `DATA_DIR` to the directory that contains it.
+The raw CSV merge is intentionally outside this command; the pipeline begins
+from the merged Parquet.
 
-## Running the Pipeline
-
-Build train/validation/test splits:
-
-```bash
-DATA_DIR=. OUT_DIR=./data python data_preprocess.py
-```
-
-Build robustness splits:
-
-```bash
-DATA_DIR=. OUT_DIR=./data_time SPLIT_MODE=temporal python data_preprocess.py
-DATA_DIR=. OUT_DIR=./data_leaf SPLIT_MODE=leaf_holdout python data_preprocess.py
-```
-
-`data_preprocess.py` fits seller-score normalization, seller-positive imputation,
-and the top leaf-category vocabulary on the training split only, then applies
-those statistics to validation/test. Each run writes `split_summary.csv` and
-`preprocess_stats.json` beside the generated parquet files.
-
-Run all phases:
-
-```bash
-python run_pipeline.py
-```
-
-By default, Phase 3 writes faithful-simulator PPO artifacts such as `ppo_metrics_faithful.json`. `results.py` prefers those faithful artifacts when available and falls back to legacy untagged PPO outputs for older local runs.
-
-Run a small smoke pipeline without touching production artifacts:
+Small smoke run:
 
 ```bash
 DATA_DIR=. OUT_DIR=./data_smoke MODEL_DIR=./models_smoke OUTPUT_DIR=./outputs_smoke \
 PREPROCESS_MAX_ROWS=50000 PHASE1_MAX_ROWS=20000 XGB_N_ESTIMATORS=40 \
-CQL_EPOCHS=1 CQL_MAX_ROWS=20000 PPO_STEPS=4096 PPO_ROLLOUT=512 PPO_EVAL_EPISODES=500 \
-OPE_BOOTSTRAP=20 OPE_MAX_ROWS=20000 OPE_BEHAVIOR_MAX_ROWS=20000 \
+CQL_EPOCHS=1 CQL_MAX_ROWS=20000 PPO_STEPS=2048 PPO_ROLLOUT=512 \
+PPO_EVAL_EPISODES=500 OPE_BOOTSTRAP=10 OPE_MAX_ROWS=10000 \
 python run_pipeline.py --phase all
 ```
 
-Run one phase at a time:
+One-listing recommendation:
 
 ```bash
-python run_pipeline.py --phase prep
-python run_pipeline.py --phase 1
-python run_pipeline.py --phase 2
-python run_pipeline.py --phase 3
+DATA_DIR=./data MODEL_DIR=./models python recommend_one.py \
+  --price 120 --seller_score 4500 --pos_pct 99.2 --leaf_category 12345
 ```
 
-Generate recommendations after training:
+`recommend_one.py` needs the trained classifier, optional CQL artifacts, and
+`data/preprocess_stats.json`. The latter persists the train-fitted category,
+normalization, and p5-p95 support metadata, so row-level training data are not
+required for one-listing inference.
 
-```bash
-python recommend.py
-python recommend_one.py --price 120 --seller_score 4500 --pos_pct 99.2
-```
+## Full-data result
 
-Run off-policy evaluation diagnostics after Phase 1:
+On the corrected fashion sample (5,705,893 opening offers), the classifier
+reached test AUC 0.8339 and Brier score 0.1539. Observed historical immediate
+expected savings was 9.73%. Phase-1 estimates were 12.68% for fixed 0.70,
+13.71% for supervised greedy, and 12.19% for CQL. Greedy kept 90.99% of actions
+inside train p5-p95 support versus 99.92% for CQL. Robust PPO simulator reward
+was 4.99% below basic PPO. See `report/technical_report.md` for evidence types,
+OPE diagnostics, and limitations.
 
-```bash
-DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python ope.py
-```
+## Interpretation boundaries
 
-The OPE script estimates behavior propensities from the observed data, then
-reports SNIPS, DR-style estimates, bootstrap confidence intervals, effective
-sample size, clipped/unclipped weights, and kernel-bandwidth sensitivity. When
-`models/cql_best.pt` and `models/cql_scaler.pkl` exist, it also evaluates the
-CQL target policy by default. These numbers are diagnostics for support
-mismatch, not causal evidence of live marketplace lift.
-
-For PPO support-edge checks, `PPO_FAITHFUL_P5=<anchor>` overrides the default
-historical 5th-percentile support threshold. Use this only for smoke/sensitivity
-investigations; do not treat short-run threshold-sweep numbers as findings.
-
-## Branch Workflow
-
-The stable branch is `main`. This clean submission repository uses curated
-milestone branches for the course code-management trail, and the final submitted
-state is tagged for reproducibility:
-
-- `feature/supervised-baseline`: preprocessing and supervised acceptance model.
-- `feature/offline-rl-cql`: offline RL, CQL, OPE diagnostics, and result tables.
-- `feature/ppo-sim`: faithful PPO simulator, recommendations, and final report integration.
+- Low offers that trigger a counteroffer are scored zero, so the objective may
+  understate their option value and favor higher immediate-close offers.
+- Buyers choose anchors endogenously. Unobserved item quality, perceived
+  overpricing, and buyer information can confound the acceptance surface.
+- Historical, model-estimated, OPE-diagnostic, and simulator-only results are
+  different evidence types and must not be ranked as if they were interchangeable.
+- Old checkpoints and report numbers created with `status_id == 2`, row-level
+  splits, or actions above listing price are incompatible and must be regenerated.

@@ -20,6 +20,7 @@ jobs:
         run: |
           python -m py_compile \
             project_constants.py \
+            policy_utils.py \
             data_preprocess.py \
             phase1_supervised.py \
             phase2_cql.py \

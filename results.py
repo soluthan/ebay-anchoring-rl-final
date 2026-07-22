@@ -1,165 +1,184 @@
-"""
-results.py — Comparison dashboard
-=================================
-Loads the artifacts from Phases 1–3 and produces:
-  1. policy_comparison.csv  — policy diagnostics with evidence-type labels
-  2. results_dashboard.png  — CQL/PPO loss curves, anchor distributions, savings bars
+"""Build the final policy table and evidence-separated dashboard."""
 
-Run AFTER phases 1–3.
-    MODEL_DIR=./models python results.py
-"""
+from __future__ import annotations
 
-import os
 import json
+import os
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
+import numpy as np
+import pandas as pd
+
 
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "./models"))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "./outputs"))
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def artifact(name, faithful_name=None):
-    """Prefer faithful PPO artifacts when available, then fall back to legacy names."""
-    if faithful_name is not None:
-        faithful_path = MODEL_DIR / faithful_name
-        if faithful_path.exists():
-            return faithful_path
-    return MODEL_DIR / name
+def load_json(path: Path):
+    with open(path, encoding="utf-8") as file:
+        return json.load(file)
 
 
-def load_json(path):
-    with open(path) as f:
-        return json.load(f)
+def load_optional(path: Path):
+    return load_json(path) if path.exists() else None
 
 
-def build_comparison_table():
-    bench = load_json(MODEL_DIR / "behavioral_benchmark.json")
-    clf_m = load_json(MODEL_DIR / "clf_metrics.json")
+def build_comparison_table() -> pd.DataFrame:
+    behavior = load_json(MODEL_DIR / "behavioral_benchmark.json")
+    classifier = load_json(MODEL_DIR / "clf_metrics.json")["test"]
+    fixed = load_json(MODEL_DIR / "fixed_anchor_metrics.json")
     greedy = load_json(MODEL_DIR / "greedy_metrics.json")
-    cql_m = load_json(MODEL_DIR / "cql_metrics.json")
-    ppo_m = load_json(artifact("ppo_metrics.json", "ppo_metrics_faithful.json"))
-    ppo_label = "PPO Faithful Sim" if ppo_m.get("faithful") else "PPO Simulated"
+    cql = load_json(MODEL_DIR / "cql_metrics.json")
+    ppo_basic = load_optional(MODEL_DIR / "ppo_metrics.json")
+    ppo_robust = load_optional(MODEL_DIR / "ppo_metrics_faithful.json")
 
     rows = [
-        {"Policy": "Behavioral (historical)",
-         "Evidence Type": "observed logged outcome",
-         "E[Savings]": bench["mean_savings_all"],
-         "Deal Rate": bench["deal_rate"],
-         "Mean Anchor": bench["mean_anchor_ratio"],
-         "AUC (Phase 1)": clf_m["test"]["auc"]},
-        {"Policy": f"Supervised Greedy (anchor={greedy['greedy_anchor']:.2f})",
-         "Evidence Type": "Phase-1 model estimate",
-         "E[Savings]": greedy["greedy_e_savings"],
-         "Deal Rate": greedy["greedy_mean_p_deal"],
-         "Mean Anchor": greedy["greedy_anchor"],
-         "AUC (Phase 1)": None},
-        {"Policy": "CQL (Offline RL)",
-         "Evidence Type": "Phase-1 model estimate",
-         "E[Savings]": cql_m["cql_e_savings_sim"],
-         "Deal Rate": cql_m.get("cql_mean_p_deal"),
-         "Mean Anchor": cql_m["cql_mean_anchor"],
-         "AUC (Phase 1)": None},
-        {"Policy": ppo_label,
-         "Evidence Type": "simulator-only estimate",
-         "E[Savings]": ppo_m["ppo_e_savings"],
-         "Deal Rate": ppo_m["ppo_mean_p_deal"],
-         "Mean Anchor": ppo_m["ppo_mean_anchor"],
-         "AUC (Phase 1)": None},
+        {
+            "Policy": "Historical behavior",
+            "Evidence Type": "observed immediate outcomes",
+            "Expected Savings": behavior["mean_savings_all"],
+            "Acceptance": behavior["opening_acceptance_rate"],
+            "Mean Anchor": behavior["mean_anchor_ratio"],
+            "Within p5-p95 Support": 1.0,
+        },
+        {
+            "Policy": "Fixed anchor 0.70",
+            "Evidence Type": "Phase-1 model estimate",
+            "Expected Savings": fixed["mean_expected_savings"],
+            "Acceptance": fixed["mean_p_accept"],
+            "Mean Anchor": fixed["mean_anchor"],
+            "Within p5-p95 Support": fixed["within_p5_p95_support_fraction"],
+        },
+        {
+            "Policy": "Supervised greedy",
+            "Evidence Type": "Phase-1 model estimate",
+            "Expected Savings": greedy["mean_expected_savings"],
+            "Acceptance": greedy["mean_p_accept"],
+            "Mean Anchor": greedy["mean_anchor"],
+            "Within p5-p95 Support": greedy["within_p5_p95_support_fraction"],
+        },
+        {
+            "Policy": "CQL support-conservative",
+            "Evidence Type": "Phase-1 model estimate",
+            "Expected Savings": cql["cql_e_savings_sim"],
+            "Acceptance": cql["cql_mean_p_accept"],
+            "Mean Anchor": cql["cql_mean_anchor"],
+            "Within p5-p95 Support": cql["cql_within_p5_p95_support_fraction"],
+        },
     ]
-    df = pd.DataFrame(rows).set_index("Policy")
-    print("\n═══ Policy Comparison Table ════════════════════════════════")
-    print(df.to_string())
-    print(
-        "\nNote: evidence types are not interchangeable. Behavioral rows are "
-        "observed logged outcomes; PPO rows are simulator-only estimates."
+    for name, metrics in (("PPO basic", ppo_basic), ("PPO robust", ppo_robust)):
+        if metrics is not None:
+            rows.append(
+                {
+                    "Policy": name,
+                    "Evidence Type": "simulator-only estimate",
+                    "Expected Savings": metrics["ppo_e_savings"],
+                    "Acceptance": metrics["ppo_mean_p_accept"],
+                    "Mean Anchor": metrics["ppo_mean_anchor"],
+                    "Within p5-p95 Support": None,
+                }
+            )
+
+    table = pd.DataFrame(rows).set_index("Policy")
+    table["Classifier AUC"] = classifier["auc"]
+    table["Classifier Brier"] = classifier["brier"]
+    table.to_csv(OUTPUT_DIR / "policy_comparison.csv")
+    print("\nPolicy comparison (evidence types must not be mixed):")
+    print(table.to_string())
+
+    if ppo_basic and ppo_robust:
+        basic_value = float(ppo_basic["ppo_e_savings"])
+        robust_value = float(ppo_robust["ppo_e_savings"])
+        shrinkage = (basic_value - robust_value) / basic_value if basic_value else float("nan")
+        with open(OUTPUT_DIR / "ppo_robustness.json", "w", encoding="utf-8") as file:
+            json.dump(
+                {
+                    "basic_simulator_expected_savings": basic_value,
+                    "robust_simulator_expected_savings": robust_value,
+                    "relative_shrinkage": shrinkage,
+                    "interpretation": "Simulator-only H3 sensitivity; not live-marketplace lift.",
+                },
+                file,
+                indent=2,
+            )
+    return table
+
+
+def plot_dashboard(table: pd.DataFrame) -> None:
+    calibration = pd.read_csv(MODEL_DIR / "clf_calibration.csv")
+    response = pd.read_csv(MODEL_DIR / "anchor_response_curve.csv")
+    cql_history = load_json(MODEL_DIR / "cql_history.json")
+    ppo_basic_history = load_optional(MODEL_DIR / "ppo_history.json")
+    ppo_robust_history = load_optional(MODEL_DIR / "ppo_history_faithful.json")
+
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9))
+    fig.suptitle("Opening-offer policy diagnostics", fontsize=15, fontweight="bold")
+
+    ax = axes[0, 0]
+    ax.plot(response["anchor_ratio"], response["mean_predicted_acceptance"], label="P(accept)")
+    ax.plot(
+        response["anchor_ratio"],
+        response["mean_predicted_expected_savings"],
+        label="Expected savings",
     )
-    df.to_csv(OUTPUT_DIR / "policy_comparison.csv")
-    return df
+    ax.set(title="H1: response over anchor grid", xlabel="Opening-offer ratio")
+    ax.legend(); ax.grid(alpha=0.3)
+
+    ax = axes[0, 1]
+    ax.plot([0, 1], [0, 1], "--", color="gray", label="perfect")
+    ax.plot(
+        calibration["mean_predicted_probability"],
+        calibration["observed_acceptance"],
+        marker="o",
+        label="classifier",
+    )
+    ax.set(title="Acceptance calibration", xlabel="Predicted", ylabel="Observed")
+    ax.legend(); ax.grid(alpha=0.3)
+
+    ax = axes[0, 2]
+    ax.plot(cql_history["td_loss"], label="reward regression")
+    ax.plot(cql_history["cql_loss"], label="CQL penalty")
+    ax.plot(cql_history["val_loss"], "--", label="validation")
+    ax.set(title="One-step CQL training", xlabel="Epoch")
+    ax.legend(); ax.grid(alpha=0.3)
+
+    model_rows = table[table["Evidence Type"] == "Phase-1 model estimate"]
+    ax = axes[1, 0]
+    ax.bar(model_rows.index, model_rows["Expected Savings"], color=["#d9a441", "#c85a54", "#4f81bd"])
+    ax.set(title="Model-estimated policies", ylabel="Expected immediate savings")
+    ax.tick_params(axis="x", rotation=20); ax.grid(axis="y", alpha=0.3)
+
+    ax = axes[1, 1]
+    ax.bar(model_rows.index, model_rows["Within p5-p95 Support"], color=["#d9a441", "#c85a54", "#4f81bd"])
+    ax.set(title="H2: historical support", ylabel="Fraction inside p5-p95", ylim=(0, 1.05))
+    ax.tick_params(axis="x", rotation=20); ax.grid(axis="y", alpha=0.3)
+
+    ax = axes[1, 2]
+    if ppo_basic_history:
+        ax.plot(ppo_basic_history["step"], ppo_basic_history["mean_reward"], label="basic")
+    if ppo_robust_history:
+        ax.plot(ppo_robust_history["step"], ppo_robust_history["mean_reward"], label="robust")
+    ax.set(title="H3: PPO simulator sensitivity", xlabel="Simulator steps", ylabel="Mean reward")
+    ax.legend(); ax.grid(alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(OUTPUT_DIR / "results_dashboard.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
 
-def plot_all():
-    cql_hist = load_json(MODEL_DIR / "cql_history.json")
-    ppo_hist = load_json(artifact("ppo_history.json", "ppo_history_faithful.json"))
-    bench = load_json(MODEL_DIR / "behavioral_benchmark.json")
-    cql_m = load_json(MODEL_DIR / "cql_metrics.json")
-    ppo_m = load_json(artifact("ppo_metrics.json", "ppo_metrics_faithful.json"))
-    greedy = load_json(MODEL_DIR / "greedy_metrics.json")
-
-    fig = plt.figure(figsize=(16, 10))
-    fig.suptitle("eBay Buyer Anchoring — RL Training Results",
-                 fontsize=14, fontweight="bold")
-    gs = gridspec.GridSpec(2, 3, figure=fig, hspace=0.40, wspace=0.35)
-
-    # 1. CQL loss curves
-    ax1 = fig.add_subplot(gs[0, 0])
-    ax1.plot(cql_hist["td_loss"], label="TD loss", linewidth=1.5)
-    ax1.plot(cql_hist["cql_loss"], label="CQL penalty", linewidth=1.5)
-    ax1.plot(cql_hist["val_loss"], label="Val loss", linewidth=1.5, linestyle="--")
-    ax1.set_title("CQL Training Loss"); ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
-    ax1.legend(fontsize=8); ax1.grid(alpha=0.3)
-
-    # 2. PPO mean reward
-    ax2 = fig.add_subplot(gs[0, 1])
-    ax2.plot(ppo_hist["step"], ppo_hist["mean_reward"], color="darkorange", linewidth=1.5)
-    ax2.set_title("PPO Mean Episode Reward"); ax2.set_xlabel("Environment Steps")
-    ax2.set_ylabel("Mean Reward (E[Savings])"); ax2.grid(alpha=0.3)
-
-    # 3. PPO entropy
-    ax3 = fig.add_subplot(gs[0, 2])
-    ax3.plot(ppo_hist["step"], ppo_hist["entropy"], color="green", linewidth=1.5)
-    ax3.set_title("PPO Policy Entropy (Exploration)"); ax3.set_xlabel("Environment Steps")
-    ax3.set_ylabel("Entropy"); ax3.grid(alpha=0.3)
-
-    # 4. Anchor ratio distributions
-    ax4 = fig.add_subplot(gs[1, :2])
-    from scipy.stats import norm
-    x = np.linspace(0.0, 1.5, 300)
-    mu_b, std_b = bench["mean_anchor_ratio"], max(bench["std_anchor_ratio"], 1e-3)
-    mu_c, std_c = cql_m["cql_mean_anchor"], max(cql_m["cql_std_anchor"], 1e-3)
-    mu_p, std_p = ppo_m["ppo_mean_anchor"], max(ppo_m["ppo_std_anchor"], 1e-3)
-    ax4.fill_between(x, norm.pdf(x, mu_b, std_b), alpha=0.35, label=f"Behavioral (μ={mu_b:.2f})")
-    ax4.fill_between(x, norm.pdf(x, mu_c, std_c), alpha=0.35, label=f"CQL (μ={mu_c:.2f})")
-    ax4.fill_between(x, norm.pdf(x, mu_p, std_p), alpha=0.35, label=f"PPO (μ={mu_p:.2f})")
-    ax4.axvline(1.0, color="gray", linestyle=":", alpha=0.6, label="Listing price (=1.0)")
-    ax4.set_title("Anchor Ratio Distributions by Policy")
-    ax4.set_xlabel("Anchor Ratio (buyer offer / listing price)")
-    ax4.set_ylabel("Density"); ax4.legend(fontsize=8); ax4.grid(alpha=0.3)
-
-    # 5. E[Savings] bar chart
-    ax5 = fig.add_subplot(gs[1, 2])
-    labels = ["Behavioral", "Greedy", "CQL", "PPO"]
-    savings = [bench["mean_savings_all"], greedy["greedy_e_savings"],
-               cql_m["cql_e_savings_sim"], ppo_m["ppo_e_savings"]]
-    colors = ["steelblue", "goldenrod", "coral", "mediumseagreen"]
-    bars = ax5.bar(labels, savings, color=colors, edgecolor="white", linewidth=1.2)
-    for bar, val in zip(bars, savings):
-        ax5.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.001,
-                 f"{val:.4f}", ha="center", va="bottom", fontsize=9)
-    ax5.set_title("Expected Savings by Policy (mixed evidence types)")
-    ax5.set_ylabel("E[Savings] (fraction of listing price)")
-    ax5.set_ylim(0, max(savings) * 1.25 + 1e-6); ax5.grid(axis="y", alpha=0.3)
-
-    plt.savefig(OUTPUT_DIR / "results_dashboard.png", dpi=150, bbox_inches="tight")
-    print(f"  Saved {OUTPUT_DIR / 'results_dashboard.png'}")
-    plt.close()
-
-
-def main():
-    print("Building results comparison …")
+def main() -> None:
     try:
-        build_comparison_table()
-        plot_all()
-        print(f"\n✅ All outputs saved to {OUTPUT_DIR}/")
-    except FileNotFoundError as e:
-        print(f"⚠️  Missing artifact: {e}")
-        print("   Run phases 1–3 first before generating results.")
+        table = build_comparison_table()
+        plot_dashboard(table)
+        print(f"\nOutputs saved to {OUTPUT_DIR}")
+    except FileNotFoundError as error:
+        print(f"Missing corrected-pipeline artifact: {error}")
+        print("Rerun preprocessing and Phases 1-3; old artifacts are not compatible.")
 
 
 if __name__ == "__main__":

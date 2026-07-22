@@ -1,173 +1,210 @@
-"""
-phase1_supervised.py — Supervised Baselines (XGBoost)
-=====================================================
-Trains the predictive model the rest of the pipeline depends on:
+"""Phase 1: supervised immediate-acceptance model and simple baselines.
 
-    deal_classifier.ubj   :  P(deal | s, a)
-
-Because an accepted Best Offer is paid at the buyer's offer, accepted-deal
-savings are mechanically:
-
-    savings = 1 - anchor_ratio
-
-Expected savings for candidate offers are therefore:
-
-    P(deal | s, anchor) * (1 - anchor)
-
-No separate price model is trained. This phase also writes:
-
-    clf_metrics.json          : test AUC
-    behavioral_benchmark.json : historical policy stats (E[savings], deal rate, anchor dist)
-    greedy_metrics.json        : expected savings of a fixed greedy anchor=0.70 policy
-
-Run:
-    DATA_DIR=./data MODEL_DIR=./models python phase1_supervised.py
+The classifier estimates ``P(opening offer accepted | state, anchor)``.  The
+fixed 0.70 policy is a rule-based baseline; the supervised greedy policy is the
+actual grid-search maximizer of ``P(accept) * (1-anchor)``.
 """
 
-import os
+from __future__ import annotations
+
 import json
+import os
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import brier_score_loss, log_loss, roc_auc_score
 
-from project_constants import (
-    ACTION_COL,
-    DEAL_COL,
-    DEAL_STATUS,
-    SEED,
-    STATE_COLS,
-)
+from policy_utils import ACTION_GRID, greedy_policy, score_actions, support_flags
+from project_constants import ACTION_COL, CLASSIFIER_FILE, LABEL_COL, SEED, STATE_COLS
 
-# ── reproducibility ───────────────────────────────────────────────
+
 np.random.seed(SEED)
 
-# ── paths ─────────────────────────────────────────────────────────
 DATA_DIR = Path(os.environ.get("DATA_DIR", "./data"))
 MODEL_DIR = Path(os.environ.get("MODEL_DIR", "./models"))
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 FEATURES = STATE_COLS + [ACTION_COL]
-
-GREEDY_ANCHOR = 0.70
-
+FIXED_ANCHOR = 0.70
 N_ESTIMATORS = int(os.environ.get("XGB_N_ESTIMATORS", "400"))
 PHASE1_MAX_ROWS = int(os.environ.get("PHASE1_MAX_ROWS", "0"))
 
 
-# ── helpers ───────────────────────────────────────────────────────
-def _features(df: pd.DataFrame) -> np.ndarray:
-    return df[FEATURES].values.astype(np.float32)
+def _features(frame: pd.DataFrame) -> np.ndarray:
+    return frame[FEATURES].values.astype(np.float32)
 
 
-def _deal_label(df: pd.DataFrame) -> np.ndarray:
-    return (df[DEAL_COL].values == DEAL_STATUS).astype(np.int32)
+def _acceptance_label(frame: pd.DataFrame) -> np.ndarray:
+    return frame[LABEL_COL].values.astype(np.int32)
 
 
-def expected_savings(clf, X: np.ndarray, anchors: np.ndarray):
-    p = clf.predict_proba(X)[:, 1]
-    savings = np.clip(1.0 - anchors, 0.0, 0.99)
-    return p * savings, p, savings
+def maybe_sample(frame: pd.DataFrame, max_rows: int, name: str) -> pd.DataFrame:
+    if max_rows and len(frame) > max_rows:
+        sampled = frame.sample(max_rows, random_state=SEED).reset_index(drop=True)
+        print(f"  [smoke] sampled {name} to {len(sampled):,} rows")
+        return sampled
+    return frame
 
 
-def maybe_sample(df: pd.DataFrame, max_rows: int, name: str) -> pd.DataFrame:
-    if max_rows and len(df) > max_rows:
-        out = df.sample(max_rows, random_state=SEED).reset_index(drop=True)
-        print(f"  [smoke] sampled {name} to {len(out):,} rows (PHASE1_MAX_ROWS)")
-        return out
-    return df
-
-
-# ── model training ────────────────────────────────────────────────
-def train_classifier(train, val):
-    Xtr, ytr = _features(train), _deal_label(train)
-    Xv, yv = _features(val), _deal_label(val)
-    clf = xgb.XGBClassifier(
-        n_estimators=N_ESTIMATORS, max_depth=6, learning_rate=0.05,
-        subsample=0.8, colsample_bytree=0.8,
-        eval_metric="auc", early_stopping_rounds=30,
-        random_state=SEED, n_jobs=-1,
+def train_classifier(train: pd.DataFrame, val: pd.DataFrame):
+    model = xgb.XGBClassifier(
+        n_estimators=N_ESTIMATORS,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        eval_metric="logloss",
+        early_stopping_rounds=30,
+        random_state=SEED,
+        n_jobs=-1,
     )
-    clf.fit(Xtr, ytr, eval_set=[(Xv, yv)], verbose=False)
-    return clf
-
-
-# ── metrics / benchmarks ──────────────────────────────────────────
-def classifier_metrics(clf, test) -> dict:
-    Xte, yte = _features(test), _deal_label(test)
-    auc = (float(roc_auc_score(yte, clf.predict_proba(Xte)[:, 1]))
-           if len(np.unique(yte)) > 1 else float("nan"))
-    return {"test": {"auc": auc}}
-
-
-def behavioral_benchmark(df) -> dict:
-    deals = df[DEAL_COL].values == DEAL_STATUS
-    anchors = df[ACTION_COL].values.astype(np.float32)
-    savings = np.where(
-        deals,
-        1.0 - anchors,
-        0.0,
+    model.fit(
+        _features(train),
+        _acceptance_label(train),
+        eval_set=[(_features(val), _acceptance_label(val))],
+        verbose=False,
     )
-    savings = np.clip(savings, 0.0, 0.99)
+    return model
+
+
+def calibration_table(y_true: np.ndarray, probability: np.ndarray, bins: int = 10) -> pd.DataFrame:
+    table = pd.DataFrame({"y": y_true, "p": probability})
+    # Rank-based bins remain stable when the model emits repeated probabilities.
+    bins = max(1, min(bins, len(table)))
+    table["bin"] = pd.qcut(
+        table["p"].rank(method="first"), q=bins, labels=False, duplicates="drop"
+    )
+    return (
+        table.groupby("bin", as_index=False)
+        .agg(n=("y", "size"), mean_predicted_probability=("p", "mean"), observed_acceptance=("y", "mean"))
+    )
+
+
+def classifier_metrics(model, test: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
+    y_true = _acceptance_label(test)
+    probability = model.predict_proba(_features(test))[:, 1]
+    auc = float(roc_auc_score(y_true, probability)) if len(np.unique(y_true)) > 1 else float("nan")
+    metrics = {
+        "test": {
+            "auc": auc,
+            "brier": float(brier_score_loss(y_true, probability)),
+            "log_loss": float(log_loss(y_true, probability, labels=[0, 1])),
+            "opening_acceptance_rate": float(y_true.mean()),
+            "mean_predicted_acceptance": float(probability.mean()),
+            "n": int(len(y_true)),
+        }
+    }
+    return metrics, calibration_table(y_true, probability)
+
+
+def behavioral_benchmark(frame: pd.DataFrame) -> dict:
+    accepted = frame[LABEL_COL].values.astype(bool)
+    anchors = frame[ACTION_COL].values.astype(np.float32)
+    rewards = accepted.astype(np.float32) * (1.0 - anchors)
     return {
-        "mean_savings_all": float(savings.mean()),
-        "mean_savings_deals_only": float(savings[deals].mean()) if deals.any() else 0.0,
-        "deal_rate": float(deals.mean()),
+        "evidence_type": "observed immediate opening-offer outcomes",
+        "mean_savings_all": float(rewards.mean()),
+        "mean_savings_accepted_only": float(rewards[accepted].mean()) if accepted.any() else 0.0,
+        "opening_acceptance_rate": float(accepted.mean()),
         "mean_anchor_ratio": float(anchors.mean()),
         "std_anchor_ratio": float(anchors.std()),
-        "n_test": int(len(df)),
+        "n_test": int(len(frame)),
     }
 
 
-def greedy_benchmark(clf, test) -> dict:
-    X = test[STATE_COLS].values.astype(np.float32)
-    anchors = np.full(len(X), GREEDY_ANCHOR, dtype=np.float32)
-    X = np.column_stack([X, anchors])
-    es, p, sv = expected_savings(clf, X, anchors)
+def fixed_anchor_benchmark(model, test: pd.DataFrame, p5: float, p95: float) -> dict:
+    states = test[STATE_COLS].values.astype(np.float32)
+    anchors = np.full(len(states), FIXED_ANCHOR, dtype=np.float32)
+    probability, expected = score_actions(model, states, anchors)
     return {
-        "greedy_anchor": GREEDY_ANCHOR,
-        "greedy_e_savings": float(es.mean()),
-        "greedy_mean_p_deal": float(p.mean()),
-        "greedy_mean_savings_if_deal": float(sv.mean()),
+        "policy": "fixed_anchor_0.70",
+        "evidence_type": "Phase-1 model estimate",
+        "mean_anchor": FIXED_ANCHOR,
+        "mean_p_accept": float(probability.mean()),
+        "mean_expected_savings": float(expected.mean()),
+        "within_p5_p95_support_fraction": float(support_flags(anchors, p5, p95).mean()),
     }
 
 
-# ── main ──────────────────────────────────────────────────────────
-def main():
-    t0 = time.time()
-    train = pd.read_parquet(DATA_DIR / "train.parquet")
-    val = pd.read_parquet(DATA_DIR / "val.parquet")
-    test = pd.read_parquet(DATA_DIR / "test.parquet")
-    train = maybe_sample(train, PHASE1_MAX_ROWS, "train")
-    val = maybe_sample(val, PHASE1_MAX_ROWS, "val")
-    test = maybe_sample(test, PHASE1_MAX_ROWS, "test")
+def supervised_greedy_benchmark(model, test: pd.DataFrame, p5: float, p95: float) -> dict:
+    states = test[STATE_COLS].values.astype(np.float32)
+    anchors, probability, expected, best_indices = greedy_policy(model, states)
+    interior = (best_indices > 0) & (best_indices < len(ACTION_GRID) - 1)
+    return {
+        "policy": "supervised_greedy",
+        "evidence_type": "Phase-1 model estimate",
+        "mean_anchor": float(anchors.mean()),
+        "std_anchor": float(anchors.std()),
+        "mean_p_accept": float(probability.mean()),
+        "mean_expected_savings": float(expected.mean()),
+        "within_p5_p95_support_fraction": float(support_flags(anchors, p5, p95).mean()),
+        "interior_optimum_fraction": float(interior.mean()),
+        "lower_boundary_optimum_fraction": float((best_indices == 0).mean()),
+        "upper_boundary_optimum_fraction": float((best_indices == len(ACTION_GRID) - 1).mean()),
+    }
+
+
+def anchor_response_curve(model, test: pd.DataFrame) -> pd.DataFrame:
+    states = test[STATE_COLS].values.astype(np.float32)
+    # A deterministic sample keeps the diagnostic cheap on the production data.
+    if len(states) > 100_000:
+        rng = np.random.default_rng(SEED)
+        states = states[rng.choice(len(states), 100_000, replace=False)]
+    rows = []
+    for anchor in ACTION_GRID:
+        actions = np.full(len(states), anchor, dtype=np.float32)
+        probability, expected = score_actions(model, states, actions)
+        rows.append(
+            {
+                "anchor_ratio": float(anchor),
+                "mean_predicted_acceptance": float(probability.mean()),
+                "mean_predicted_expected_savings": float(expected.mean()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def main() -> None:
+    started = time.time()
+    train = maybe_sample(pd.read_parquet(DATA_DIR / "train.parquet"), PHASE1_MAX_ROWS, "train")
+    val = maybe_sample(pd.read_parquet(DATA_DIR / "val.parquet"), PHASE1_MAX_ROWS, "val")
+    test = maybe_sample(pd.read_parquet(DATA_DIR / "test.parquet"), PHASE1_MAX_ROWS, "test")
     print(f"Loaded train={len(train):,} val={len(val):,} test={len(test):,}")
 
-    print("Training deal classifier …")
-    clf = train_classifier(train, val)
+    print("Training immediate opening-offer acceptance classifier ...")
+    model = train_classifier(train, val)
+    model.save_model(str(MODEL_DIR / CLASSIFIER_FILE))
 
-    clf.save_model(str(MODEL_DIR / "deal_classifier.ubj"))
+    metrics, calibration = classifier_metrics(model, test)
+    behavior = behavioral_benchmark(test)
+    p5, p95 = np.percentile(train[ACTION_COL].values, [5, 95])
+    fixed = fixed_anchor_benchmark(model, test, float(p5), float(p95))
+    greedy = supervised_greedy_benchmark(model, test, float(p5), float(p95))
 
-    clf_m = classifier_metrics(clf, test)
-    bench = behavioral_benchmark(test)
-    greedy = greedy_benchmark(clf, test)
+    with open(MODEL_DIR / "clf_metrics.json", "w", encoding="utf-8") as file:
+        json.dump(metrics, file, indent=2)
+    with open(MODEL_DIR / "behavioral_benchmark.json", "w", encoding="utf-8") as file:
+        json.dump(behavior, file, indent=2)
+    with open(MODEL_DIR / "fixed_anchor_metrics.json", "w", encoding="utf-8") as file:
+        json.dump(fixed, file, indent=2)
+    with open(MODEL_DIR / "greedy_metrics.json", "w", encoding="utf-8") as file:
+        json.dump(greedy, file, indent=2)
+    calibration.to_csv(MODEL_DIR / "clf_calibration.csv", index=False)
+    anchor_response_curve(model, test).to_csv(MODEL_DIR / "anchor_response_curve.csv", index=False)
 
-    with open(MODEL_DIR / "clf_metrics.json", "w") as f:
-        json.dump(clf_m, f, indent=2)
-    with open(MODEL_DIR / "behavioral_benchmark.json", "w") as f:
-        json.dump(bench, f, indent=2)
-    with open(MODEL_DIR / "greedy_metrics.json", "w") as f:
-        json.dump(greedy, f, indent=2)
-
-    print("\n── Phase 1 summary ─────────────────────────────────")
-    print(f"  Test AUC (P deal)         : {clf_m['test']['auc']:.4f}")
-    print(f"  Behavioural E[savings]    : {bench['mean_savings_all']:.4f}")
-    print(f"  Behavioural deal rate     : {bench['deal_rate']:.4f}")
-    print(f"  Greedy(0.70) E[savings]   : {greedy['greedy_e_savings']:.4f}")
-    print(f"\n✅ Phase 1 complete in {time.time() - t0:.1f}s")
+    test_metrics = metrics["test"]
+    print("\n-- Phase 1 summary --------------------------------")
+    print(f"  Test AUC                       : {test_metrics['auc']:.4f}")
+    print(f"  Test Brier score               : {test_metrics['brier']:.4f}")
+    print(f"  Observed immediate acceptance  : {behavior['opening_acceptance_rate']:.4f}")
+    print(f"  Observed E[immediate savings]  : {behavior['mean_savings_all']:.4f}")
+    print(f"  Fixed 0.70 model E[savings]    : {fixed['mean_expected_savings']:.4f}")
+    print(f"  Greedy model E[savings]        : {greedy['mean_expected_savings']:.4f}")
+    print(f"  Greedy interior optima         : {greedy['interior_optimum_fraction']:.1%}")
+    print(f"\nPhase 1 complete in {time.time() - started:.1f}s")
 
 
 if __name__ == "__main__":

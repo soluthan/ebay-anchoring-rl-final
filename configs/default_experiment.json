@@ -25,10 +25,15 @@
   "phase1_supervised": {
     "script": "phase1_supervised.py",
     "XGB_N_ESTIMATORS": 400,
+    "ACTION_GRID_SIZE": 67,
+    "action_grid_note": "The 0.01-to-1.00 grid includes the fixed 0.70 anchor exactly.",
     "outputs": [
-      "models/deal_classifier.ubj",
+      "models/opening_acceptance_classifier.ubj",
       "models/clf_metrics.json",
       "models/behavioral_benchmark.json",
+      "models/fixed_anchor_metrics.json",
+      "models/clf_calibration.csv",
+      "models/anchor_response_curve.csv",
       "models/greedy_metrics.json"
     ]
   },
@@ -43,20 +48,28 @@
     "train_only_fitted_statistics": [
       "seller_score_p99",
       "seller_pos_median",
-      "top_leaf_categories"
+      "top_leaf_categories",
+      "anchor_p5",
+      "anchor_p95"
     ],
     "outputs": [
       "data/train.parquet",
       "data/val.parquet",
       "data/test.parquet",
       "data/split_summary.csv",
-      "data/preprocess_stats.json"
+      "data/preprocess_stats.json",
+      "data/item_split_overlap.json",
+      "data/opening_status_counts.csv",
+      "data/acceptance_by_anchor_bin.csv",
+      "data/status_price_diagnostics.csv"
     ]
   },
   "phase2_cql": {
     "script": "phase2_cql.py",
     "CQL_EPOCHS": 30,
     "CQL_MAX_ROWS": 400000,
+    "CQL_ALPHA": 5.0,
+    "CQL_N_NEG": 10,
     "outputs": [
       "models/cql_best.pt",
       "models/cql_scaler.pkl",
@@ -84,9 +97,13 @@
     "PPO_STEPS": 200000,
     "PPO_ROLLOUT": 2048,
     "PPO_EVAL_EPISODES": 5000,
+    "PPO_RUN_BOTH": 1,
     "PPO_FAITHFUL": 1,
     "PPO_FAITHFUL_BETA": 8.0,
     "outputs": [
+      "models/ppo_best.pt",
+      "models/ppo_history.json",
+      "models/ppo_metrics.json",
       "models/ppo_best_faithful.pt",
       "models/ppo_history_faithful.json",
       "models/ppo_metrics_faithful.json"
@@ -104,9 +121,9 @@
     "DATA_DIR=. OUT_DIR=./data python data_preprocess.py",
     "DATA_DIR=./data MODEL_DIR=./models python phase1_supervised.py",
     "DATA_DIR=./data MODEL_DIR=./models python phase2_cql.py",
-    "DATA_DIR=./data MODEL_DIR=./models PPO_FAITHFUL=1 python phase3_ppo.py",
-    "MODEL_DIR=./models OUTPUT_DIR=./outputs python results.py",
+    "DATA_DIR=./data MODEL_DIR=./models PPO_RUN_BOTH=1 python phase3_ppo.py",
     "DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python ope.py",
-    "DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python recommend.py"
+    "DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python recommend.py",
+    "MODEL_DIR=./models OUTPUT_DIR=./outputs python results.py"
   ]
 }

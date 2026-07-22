@@ -39,11 +39,12 @@ from scipy.stats import norm
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.preprocessing import StandardScaler
 
+from policy_utils import greedy_policy, score_actions
 from project_constants import (
     ACTION_COL,
     ANCHOR_MAX,
     ANCHOR_MIN,
-    LIST_COL,
+    CLASSIFIER_FILE,
     N_GRID,
     REWARD_COL,
     SEED,
@@ -114,26 +115,8 @@ def train_behavior_policy(train: pd.DataFrame) -> BehaviorPolicy:
 
 
 def reward_model_values(clf, states: np.ndarray, actions: np.ndarray) -> np.ndarray:
-    feat = np.column_stack([states, actions]).astype(np.float32)
-    p_deal = clf.predict_proba(feat)[:, 1]
-    savings = np.clip(1.0 - actions, 0.0, 0.99)
-    return np.clip(p_deal * savings, 0.0, 0.99)
-
-
-def greedy_actions(clf, states: np.ndarray) -> np.ndarray:
-    grid = np.linspace(ANCHOR_MIN, ANCHOR_MAX, N_GRID, dtype=np.float32)
-    outs = []
-    chunk = 4096
-    for start in range(0, len(states), chunk):
-        s = states[start:start + chunk]
-        b = len(s)
-        s_rep = np.repeat(s, N_GRID, axis=0)
-        a_rep = np.tile(grid, b)
-        feat = np.column_stack([s_rep, a_rep]).astype(np.float32)
-        p = clf.predict_proba(feat)[:, 1].reshape(b, N_GRID)
-        expected = p * (1.0 - grid)[None, :]
-        outs.append(grid[expected.argmax(axis=1)])
-    return np.concatenate(outs)
+    _, expected = score_actions(clf, states, actions)
+    return expected
 
 
 def cql_artifacts_available() -> bool:
@@ -184,10 +167,10 @@ def cql_actions(states: np.ndarray) -> np.ndarray | None:
 
 def policy_action_table(test: pd.DataFrame, clf) -> dict[str, np.ndarray]:
     states = test[STATE_COLS].values.astype(np.float32)
+    greedy_actions, _, _, _ = greedy_policy(clf, states)
     policies = {
-        "behavioral_logged": test[ACTION_COL].values.astype(np.float32),
         "fixed_anchor_0.70": np.full(len(test), 0.70, dtype=np.float32),
-        "greedy_model": greedy_actions(clf, states),
+        "supervised_greedy": greedy_actions,
     }
     cql = cql_actions(states)
     if cql is not None:
@@ -348,6 +331,40 @@ def evaluate_policy(
     return estimates, diagnostics
 
 
+def on_policy_sanity(clf, test: pd.DataFrame) -> tuple[dict, dict]:
+    """The logged policy must reproduce its observed reward with unit weights."""
+    states = test[STATE_COLS].values.astype(np.float32)
+    actions = test[ACTION_COL].values.astype(np.float32)
+    rewards = test[REWARD_COL].values.astype(np.float32)
+    q_logged = reward_model_values(clf, states, actions)
+    weights = np.ones(len(test), dtype=np.float32)
+    estimates = point_estimates(rewards, q_logged, q_logged, weights)
+    estimates.update(
+        {
+            "policy": "behavioral_on_policy",
+            "bandwidth": float("nan"),
+            "weights": "unit_on_policy",
+            "n": int(len(test)),
+            "target_anchor_mean": float(actions.mean()),
+            "target_anchor_std": float(actions.std()),
+            "behavior_density_p5": float("nan"),
+            "behavior_density_p50": float("nan"),
+        }
+    )
+    diagnostics = summarize_weights(weights)
+    diagnostics.update(
+        {
+            "policy": "behavioral_on_policy",
+            "bandwidth": float("nan"),
+            "weights": "unit_on_policy",
+            "n": int(len(test)),
+        }
+    )
+    if not np.isclose(estimates["snips"], rewards.mean(), atol=1e-8):
+        raise AssertionError("On-policy OPE sanity check did not reproduce logged reward.")
+    return estimates, diagnostics
+
+
 def maybe_sample(df: pd.DataFrame, max_rows: int) -> pd.DataFrame:
     if max_rows > 0 and len(df) > max_rows:
         return df.sample(max_rows, random_state=SEED).reset_index(drop=True)
@@ -365,7 +382,7 @@ def main():
     import xgboost as xgb
 
     clf = xgb.XGBClassifier()
-    clf.load_model(str(MODEL_DIR / "deal_classifier.ubj"))
+    clf.load_model(str(MODEL_DIR / CLASSIFIER_FILE))
 
     print("Training estimated behavior policy pi_b(a | s) ...")
     behavior = train_behavior_policy(train)
@@ -376,8 +393,9 @@ def main():
     print("Building target policy actions ...")
     policies = policy_action_table(test, clf)
 
-    eval_rows = []
-    diagnostic_rows = []
+    sanity_estimates, sanity_diagnostics = on_policy_sanity(clf, test)
+    eval_rows = [sanity_estimates]
+    diagnostic_rows = [sanity_diagnostics]
     for policy_name, target_actions in policies.items():
         for bandwidth in BANDWIDTHS:
             for clipped in (True, False):
@@ -401,7 +419,8 @@ def main():
         "bootstrap_replicates": N_BOOTSTRAP,
         "weight_clip": WEIGHT_CLIP,
         "n_test_evaluated": int(len(test)),
-        "policies": sorted(policies.keys()),
+        "policies": ["behavioral_on_policy"] + sorted(policies.keys()),
+        "on_policy_sanity_reward": sanity_estimates["snips"],
         "files": {
             "policy_eval": str(OUTPUT_DIR / "ope_policy_eval.csv"),
             "weight_diagnostics": str(OUTPUT_DIR / "ope_weight_diagnostics.csv"),

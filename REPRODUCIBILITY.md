@@ -1,90 +1,54 @@
 # Reproducibility Notes
 
-This project follows the course guidance that GitHub is part of scientific reproducibility, not just code storage.
+## Required semantic audit
 
-## Version Control
+Before accepting any model results, verify:
 
-- Stable code lives on `main`.
-- The final submitted state is identified by the latest `course-submission-*`
-  tag.
-- This clean submission repository keeps curated milestone branches:
-  - `feature/supervised-baseline`: preprocessing and supervised acceptance model.
-  - `feature/offline-rl-cql`: offline RL, CQL, OPE diagnostics, and result tables.
-  - `feature/ppo-sim`: faithful PPO simulator, recommendations, and final report integration.
+1. `preprocess_stats.json` records accepted statuses `[1, 9]` and split group
+   `anon_item_id`.
+2. `item_split_overlap.json` contains three zeros.
+3. Every processed row has `offr_type_id == 0` and a unique
+   `(anon_item_id, anon_byr_id)` pair.
+4. Every `anchor_ratio` is in `(0.01, 1.0]`.
+5. `savings_pct == opening_accepted * (1-anchor_ratio)`.
+6. `acceptance_by_anchor_bin.csv` has plausible status-1/status-9 behavior.
+7. In `status_price_diagnostics.csv`, statuses treated as accepted have
+   `median_item_to_offer` near 1 and high `item_offer_within_1pct`.
 
-## Data Boundary
+Status trends are diagnostics; the official data dictionary/companion code is
+the authority for status semantics.
 
-The repository does not commit raw data, processed parquet splits, trained checkpoints, metrics, generated figures, or local environments. Those are intentionally ignored by `.gitignore`.
-
-Expected local inputs and generated outputs:
-
-- Input: `clean_master_dataset.parquet`
-- Processed splits: `data/train.parquet`, `data/val.parquet`, `data/test.parquet`
-- Split audit files: `data/split_summary.csv`, `data/preprocess_stats.json`
-- Robustness split directories such as `data_time/` and `data_leaf/`
-- Models and metrics: `models/`
-- Smoke-test model directories such as `models_smoke/`
-- Recommendation tables and figures: `outputs/`
-- Smoke-test output directories such as `outputs_smoke/`
-- Human-facing report and selected figures: `report/`
-
-See `docs/data_schema.md` for the raw-to-engineered column mapping and the
-one-step MDP framing. See `docs/repository_structure_appendix.md` for the
-folder structure, module responsibilities, core constants, and evidence-type
-boundary used across the repository.
-
-## Configuration
-
-The default experiment settings are documented in `configs/default_experiment.json`. The current scripts read configuration through environment variables to keep the flat module layout simple.
-
-Example full run:
+## Full run
 
 ```bash
-DATA_DIR=. OUT_DIR=./data python data_preprocess.py
-DATA_DIR=./data MODEL_DIR=./models python phase1_supervised.py
-DATA_DIR=./data MODEL_DIR=./models python phase2_cql.py
-DATA_DIR=./data MODEL_DIR=./models PPO_FAITHFUL=1 python phase3_ppo.py
-MODEL_DIR=./models OUTPUT_DIR=./outputs python results.py
-DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python ope.py
-DATA_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs python recommend.py
+DATA_DIR=. OUT_DIR=./data MODEL_DIR=./models OUTPUT_DIR=./outputs \
+PPO_RUN_BOTH=1 python run_pipeline.py --phase all
 ```
 
-With `PPO_FAITHFUL=1`, Phase 3 writes `ppo_*_faithful` artifacts. `results.py` prefers those faithful outputs when present and falls back to legacy untagged PPO outputs for older local runs.
+Run order is preprocessing, Phase 1, CQL, both PPO variants, optional OPE,
+recommendations, then the dashboard. Each model phase uses seed 42. PPO resets
+the seed for both variants to make the H3 comparison less sensitive to random
+initialization.
 
-Robustness split examples:
+## Evaluation
 
-```bash
-DATA_DIR=. OUT_DIR=./data_time SPLIT_MODE=temporal python data_preprocess.py
-DATA_DIR=. OUT_DIR=./data_leaf SPLIT_MODE=leaf_holdout python data_preprocess.py
-```
+- Classifier: ROC AUC, Brier score, log loss, and reliability bins.
+- H1: anchor-response curve and interior-optimum fraction.
+- H2: fraction of recommended actions within train p5-p95 support; OPE is an
+  optional diagnostic rather than causal evidence.
+- Report CQL's `alpha` (default `5.0`) because the strength of conservatism
+  directly affects the H2 result.
+- H3: basic versus robust PPO simulator reward and relative shrinkage.
 
-The preprocessing script fits seller-score normalization, seller-positive
-imputation, and leaf-category vocabulary on train only. Temporal and
-leaf-holdout splits are intended as robustness checks for chronological shift
-and unseen fashion sub-categories; cross-meta-category generalization remains a
-future-work extension.
+## Artifact incompatibility
 
-`ope.py` estimates behavior propensities because logged randomized propensities
-are unavailable. Its SNIPS/DR estimates, bootstrap confidence intervals,
-effective sample sizes, and weight diagnostics should be read as support
-mismatch evidence rather than causal online-lift estimates. If CQL artifacts are
-present, the OPE table includes the CQL target policy automatically.
+All models, metrics, figures, report numbers, and recommendation outputs created
+before the opening-event/status/group-split correction must be deleted or stored
+outside the submission repository and regenerated. Old checkpoints are not
+compatible with the Beta PPO architecture.
 
-## Random Seeds
+## Data boundary
 
-The scripts use seed `42` for data splitting, model sampling, CQL, PPO, and recommendation sampling. See `configs/default_experiment.json` for the seed map.
-
-## Dependency Policy
-
-The project keeps `requirements.txt` as the readable dependency source of truth
-and includes `requirements-lock.txt` as the exact package snapshot from the
-clean smoke-test environment used for the final submission audit. Use the lock
-file for archival reproduction, and use the range-based file when adapting the
-project to a newer local environment.
-
-## Smoke Checks
-
-The CI workflow runs lightweight checks that do not require the private dataset:
-
-- Python bytecode compilation for the flat modules.
-- Static tests for expected files, JSON config validity, report allowlist rules, and flat imports in `run_pipeline.py`.
+No private eBay data, processed splits, model checkpoints, or generated output
+tables are committed. The pipeline starts from a local merged
+`clean_master_dataset.parquet`; raw CSV joining is intentionally outside scope.

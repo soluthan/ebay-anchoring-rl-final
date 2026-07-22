@@ -34,10 +34,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from policy_utils import ACTION_GRID, greedy_policy, score_actions
 from project_constants import (
     ACTION_COL,
     ANCHOR_MAX,
     ANCHOR_MIN,
+    CLASSIFIER_FILE,
     ITEM_COL,
     LIST_COL,
     N_GRID,
@@ -50,7 +52,7 @@ MODEL_DIR = Path(os.environ.get("MODEL_DIR", "./models"))
 OUT_DIR = Path(os.environ.get("OUTPUT_DIR", "./outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-GRID = np.linspace(ANCHOR_MIN, ANCHOR_MAX, N_GRID).astype(np.float32)
+GRID = ACTION_GRID
 
 N_SAMPLE = int(os.environ.get("RECO_N", "5000"))
 SPARSE_FRAC = 0.01
@@ -75,23 +77,8 @@ def build_support(train):
     return {"p5": float(p5), "p95": float(p95), "warn": warn}
 
 
-# ── greedy policy: argmax_a P(accept|s,a) * (1 - a) ───────────────
-def greedy_policy(clf, states):
-    B = len(states)
-    s_rep = np.repeat(states, N_GRID, axis=0)
-    a_rep = np.tile(GRID, B)
-    feat = np.column_stack([s_rep, a_rep]).astype(np.float32)
-    p = clf.predict_proba(feat)[:, 1].reshape(B, N_GRID)
-    es = p * (1.0 - GRID)[None, :]
-    best = es.argmax(axis=1)
-    return GRID[best], p[np.arange(B), best], es[np.arange(B), best]
-
-
 def score_anchor(clf, states, anchors):
-    feat = np.column_stack([states, np.asarray(anchors, np.float32)]).astype(np.float32)
-    p = clf.predict_proba(feat)[:, 1]
-    es = p * (1.0 - np.asarray(anchors))
-    return p, es
+    return score_actions(clf, states, anchors)
 
 
 # ── optional CQL policy ───────────────────────────────────────────
@@ -132,7 +119,7 @@ def main():
     train = pd.read_parquet(DATA_DIR / "train.parquet")
     test = pd.read_parquet(DATA_DIR / "test.parquet")
     import xgboost as xgb
-    clf = xgb.XGBClassifier(); clf.load_model(str(MODEL_DIR / "deal_classifier.ubj"))
+    clf = xgb.XGBClassifier(); clf.load_model(str(MODEL_DIR / CLASSIFIER_FILE))
 
     support = build_support(train)
 
@@ -146,7 +133,7 @@ def main():
         "historical_anchor": np.round(sample[ACTION_COL].values, 3),
     })
 
-    ga, gp, ges = greedy_policy(clf, states)
+    ga, gp, ges, _ = greedy_policy(clf, states)
     gflag = support["warn"](ga)
     out["greedy_anchor"] = np.round(ga, 3)
     out["greedy_offer_usd"] = np.round(ga * list_px, 2)

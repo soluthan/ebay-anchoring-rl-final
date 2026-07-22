@@ -16,15 +16,31 @@ STATE_COLS = [
 ]
 ACTION_COL = "anchor_ratio"
 REWARD_COL = "savings_pct"
-DEAL_COL = "status_id"
+LABEL_COL = "opening_accepted"
+STATUS_COL = "status_id"
 LIST_COL = "start_price_usd"
 ITEM_COL = "anon_item_id"
-FINAL_OFFER_COL = "offr_price"
+BUYER_COL = "anon_byr_id"
+THREAD_COL = "anon_thread_id"
+OFFER_TYPE_COL = "offr_type_id"
+OFFER_PRICE_COL = "offr_price"
+ITEM_PRICE_COL = "item_price"
+CLASSIFIER_FILE = "opening_acceptance_classifier.ubj"
 
-DEAL_STATUS = 2
+# Dataset-specific opening-acceptance mapping. Preprocessing writes status/price
+# diagnostics so this assumption is auditable rather than silently trusted.
+ACCEPTED_STATUSES = (1, 9)
+FIRST_BUYER_OFFER_TYPE = 0
 FASHION_CATEG_IDS = [11450]
 
 ANCHOR_MIN = 0.01
-ANCHOR_MAX = 1.50
-N_GRID = 50
-N_ACTIONS_DISC = 50
+ANCHOR_MAX = 1.00
+# Sixty-seven evenly spaced points from 0.01 to 1.00 use a 0.015 step and
+# therefore include the economically important fixed 0.70 baseline exactly.
+# This guarantees that the grid-greedy policy cannot score below the baseline
+# merely because a tree model jumps at 0.70 while a coarser grid misses it.
+ACTION_GRID_SIZE = 67
+
+# Backward-compatible names used by the individual phase scripts.
+N_GRID = ACTION_GRID_SIZE
+N_ACTIONS_DISC = ACTION_GRID_SIZE

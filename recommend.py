@@ -171,8 +171,11 @@ def main():
     else:
         print("  CQL        (run phase2_cql.py to add this row + the cql_* columns)")
 
-    print("\nReminder: p_accept / exp_savings are MODEL estimates; trust the support flag,"
-          "\nprefer CQL where greedy is EXTRAPOLATED.")
+    print(
+        "\nReminder: p_accept / exp_savings are MODEL estimates; trust both support flags."
+        "\nUse CQL when greedy is EXTRAPOLATED only if CQL is inside support; otherwise "
+        "use fixed 0.70."
+    )
 
 
 if __name__ == "__main__":

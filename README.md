@@ -124,6 +124,10 @@ PPO_EVAL_EPISODES=500 OPE_BOOTSTRAP=10 OPE_MAX_ROWS=10000 \
 python run_pipeline.py --phase all
 ```
 
+This capped configuration is an execution smoke test only. One CQL epoch and a
+short PPO rollout can produce degenerate policy metrics; use the uncapped full
+run for research conclusions.
+
 One-listing recommendation:
 
 ```bash

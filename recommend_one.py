@@ -128,7 +128,7 @@ def main() -> None:
     candidates = [("Fixed 0.70 baseline", 0.70)]
     cql = cql_anchor(state)
     if cql is not None:
-        candidates.append(("CQL support-aware", cql))
+        candidates.append(("CQL offline RL", cql))
     candidates.append(("Supervised greedy", float(greedy_anchor[0])))
 
     print(
@@ -155,8 +155,8 @@ def main() -> None:
 
     print(
         "\nP(accept) and E[savings] are observational model estimates, not causal "
-        "guarantees. CQL is support-conservative; it is not guaranteed to have "
-        "the highest acceptance probability. PPO is omitted because it is simulator-only.\n"
+        "guarantees. Use CQL as a fallback only when its support label is inside; "
+        "otherwise use fixed 0.70. PPO is omitted because it is simulator-only.\n"
     )
 
 

@@ -96,6 +96,7 @@ class StaticRepoTests(unittest.TestCase):
         self.assertIn("preprocess_stats.json", source)
         self.assertIn("--leaf_category", source)
         self.assertIn("PPO is omitted", source)
+        self.assertIn("otherwise use fixed 0.70", source)
         self.assertNotIn("clean_master_dataset.parquet", source)
 
     def test_pipeline_order_and_flat_imports(self):
